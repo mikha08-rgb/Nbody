@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>N-Body Gravity Simulator</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #05070c;
+      }
+      #sim-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        cursor: grab;
+      }
+      #sim-canvas.dragging {
+        cursor: grabbing;
+      }
+      .overlay {
+        position: fixed;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #c8d2e0;
+        background: rgba(10, 14, 22, 0.72);
+        border: 1px solid rgba(120, 150, 200, 0.18);
+        border-radius: 8px;
+        padding: 10px 12px;
+        backdrop-filter: blur(4px);
+      }
+      #controls {
+        top: 12px;
+        left: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #controls .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      #controls label {
+        min-width: 68px;
+        color: #8fa0b8;
+      }
+      #controls output {
+        min-width: 56px;
+        text-align: right;
+        color: #e6ecf5;
+      }
+      #controls button,
+      #controls select {
+        font: inherit;
+        color: #e6ecf5;
+        background: #1a2333;
+        border: 1px solid #2c3a52;
+        border-radius: 5px;
+        padding: 3px 10px;
+        cursor: pointer;
+      }
+      #controls button:hover,
+      #controls select:hover {
+        background: #223048;
+      }
+      #controls input[type='range'] {
+        width: 140px;
+        accent-color: #6ea8ff;
+      }
+      #controls input[type='range']:disabled {
+        opacity: 0.35;
+      }
+      #stats {
+        top: 12px;
+        right: 12px;
+        text-align: right;
+        min-width: 150px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="sim-canvas"></canvas>
+    <div id="controls" class="overlay"></div>
+    <div id="stats" class="overlay"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
