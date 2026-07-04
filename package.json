@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "bench": "tsx scripts/bench.ts",
-    "test:gpu": "vitest run --config vitest.gpu.config.ts"
+    "test:gpu": "vitest run --config vitest.gpu.config.ts",
+    "bench:gpu": "tsx scripts/bench-gpu.ts"
   },
   "devDependencies": {
     "@vitest/browser-playwright": "^4.1.9",
