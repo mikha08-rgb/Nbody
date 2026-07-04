@@ -1,3 +1,6 @@
+import { acquireGpu } from './gpu/device';
+import { GpuLeapfrog } from './gpu/gpu-leapfrog';
+import { SwitchableIntegrator } from './gpu/switchable-integrator';
 import { BarnesHut } from './physics/barnes-hut';
 import { relativeEnergyDrift } from './physics/diagnostics';
 import { EnergySampler } from './physics/energy-sampler';
@@ -43,18 +46,34 @@ let scenario = getScenario('disk-galaxy');
 let count = scenario.defaultN;
 
 /**
- * Force-method dispatch. The integrator holds one ForceCalculator for its
- * lifetime, so the closure switches on the current UI selection instead of
- * rebuilding the integrator. Switching mid-run is safe: the next step's
- * opening kick reuses accelerations from the previous method — a one-off
- * O(θ)-sized nudge, same order as the approximation itself.
+ * WebGPU is detected once at boot; no adapter → gpuCtx is null, the GPU
+ * option renders disabled with a note, and everything below runs exactly
+ * as it did in Phases 1–2.
+ */
+const gpuCtx = await acquireGpu();
+
+/**
+ * Force-method dispatch, two seams deep. Between the CPU methods the
+ * integrator holds one ForceCalculator whose closure switches on the
+ * current UI selection — switching mid-run is safe: the next step's
+ * opening kick reuses accelerations from the previous method, a one-off
+ * O(θ)-sized nudge, same order as the approximation itself. CPU ↔ GPU is
+ * an integrator swap instead (the GPU path integrates on-device, see
+ * gpu-leapfrog.ts), delegated through SwitchableIntegrator so Simulation
+ * never knows.
  */
 const barnesHut = new BarnesHut();
 let forceMethod: ForceMethod = scenario.forceMethod ?? 'brute';
+if (forceMethod === 'gpu' && gpuCtx === null) forceMethod = 'barnes-hut';
 const force: ForceCalculator = (s) =>
   forceMethod === 'barnes-hut' ? barnesHut.accelerations(s) : computeAccelerations(s);
 
-const sim = new Simulation(scenario.generate(count, SEED), new Leapfrog(force), scenario.dt);
+const integrator = new SwitchableIntegrator(
+  new Leapfrog(force),
+  gpuCtx !== null ? new GpuLeapfrog(gpuCtx.device) : null,
+  forceMethod === 'gpu',
+);
+const sim = new Simulation(scenario.generate(count, SEED), integrator, scenario.dt);
 
 /**
  * Energy diagnostics run through the time-sliced sampler: 'baseline'
@@ -92,6 +111,9 @@ const stats = new StatsOverlay(el('stats'));
 
 function resetScenario(dt: number): void {
   sim.reset(scenario.generate(count, SEED), dt);
+  // A reset supersedes any in-flight CPU↔GPU handoff; reconcile the
+  // integrator with the current UI selection.
+  integrator.setUseGpu(forceMethod === 'gpu', sim.state);
   beginBaseline();
   camera.fit(sim.state);
 }
@@ -103,6 +125,7 @@ const controls = buildControls(el('controls'), {
   dt: sim.dt,
   forceMethod,
   theta: barnesHut.theta,
+  gpuAvailable: gpuCtx !== null,
   onTogglePlay: () => (sim.running = !sim.running),
   onReset: () => resetScenario(sim.dt),
   onScenarioChange: (id) => {
@@ -123,10 +146,21 @@ const controls = buildControls(el('controls'), {
   },
   onForceMethodChange: (method) => {
     forceMethod = method;
+    integrator.setUseGpu(method === 'gpu', sim.state);
   },
   onThetaChange: (theta) => {
     barnesHut.theta = theta;
   },
+});
+
+// If the GPU device dies mid-session (driver reset, GPU removed), continue
+// on the CPU from the read-back mirror and retire the option for good.
+gpuCtx?.lost.then((info) => {
+  console.warn(`WebGPU device lost (${info.reason}): ${info.message}`);
+  if (forceMethod === 'gpu') forceMethod = 'barnes-hut';
+  integrator.fallbackToCpu(sim.state);
+  controls.disableGpu('WebGPU device lost — GPU force method disabled.');
+  controls.syncScenario(scenario, count, sim.dt, forceMethod);
 });
 
 let last = performance.now();
@@ -137,8 +171,16 @@ function frame(now: number): void {
   const elapsed = (now - last) / 1000;
   last = now;
 
-  sim.advance(elapsed);
+  // GPU backpressure: when the snapshot ring is saturated the GPU is
+  // behind — skip stepping this frame so sim time slows to what the GPU
+  // sustains (drop-excess, like the substep cap; never a queue spiral).
+  if (!integrator.backpressured) {
+    sim.advance(elapsed);
+  }
   renderer.draw(sim.state, camera);
+  // Refresh the GPU-mode mirror (renderer + diagnostics read it); no-op
+  // on the CPU path and while paused.
+  integrator.pump(sim.state);
 
   // Energy sampling: pump the in-progress sample a slice per frame, or
   // schedule the next one. The gap adapts to the measured sample cost so

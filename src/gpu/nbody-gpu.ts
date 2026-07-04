@@ -36,7 +36,7 @@ export const WORKGROUP_SIZE = 256;
  * backpressure signal to stop scheduling steps (the sim slows down instead
  * of queueing unbounded GPU work, same philosophy as the substep cap).
  */
-const MAX_SNAPSHOTS_IN_FLIGHT = 2;
+export const MAX_SNAPSHOTS_IN_FLIGHT = 2;
 
 export class NBodyPrograms {
   readonly bindGroupLayout: GPUBindGroupLayout;

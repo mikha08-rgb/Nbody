@@ -3,9 +3,11 @@ import type { SimState } from '../physics/state';
 /**
  * Which force calculator drives the simulation. Brute force is exact and
  * wins at small N; Barnes-Hut approximates (opening angle θ) and wins at
- * large N — the benchmark table in README.md pins the crossover.
+ * large N — the benchmark table in README.md pins the crossover. 'gpu' is
+ * the Phase 3 WebGPU brute-force port (Float32, exact pair sum); it is
+ * offered only when the browser exposes a WebGPU adapter.
  */
-export type ForceMethod = 'brute' | 'barnes-hut';
+export type ForceMethod = 'brute' | 'barnes-hut' | 'gpu';
 
 /**
  * A scenario is a pure generator: (n, seed) → fresh SimState.

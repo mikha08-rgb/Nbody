@@ -10,6 +10,8 @@ export interface ControlsConfig {
   dt: number;
   forceMethod: ForceMethod;
   theta: number;
+  /** False → the GPU option renders disabled with a visible note. */
+  gpuAvailable: boolean;
   /** Toggle play/pause; returns the new running state. */
   onTogglePlay(): boolean;
   onReset(): void;
@@ -30,6 +32,8 @@ export interface Controls {
    * enablement).
    */
   syncScenario(scenario: Scenario, count: number, dt: number, forceMethod: ForceMethod): void;
+  /** Disable the GPU option after the fact (device lost mid-session). */
+  disableGpu(note: string): void;
 }
 
 function row(label: string, ...children: HTMLElement[]): HTMLDivElement {
@@ -96,6 +100,7 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
   for (const [value, label] of [
     ['brute', 'Brute force (exact)'],
     ['barnes-hut', 'Barnes–Hut (θ)'],
+    ['gpu', 'GPU brute force (f32)'],
   ] as const) {
     const option = document.createElement('option');
     option.value = value;
@@ -104,7 +109,24 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
   }
   methodSelect.title =
     'Brute force is exact O(N²); Barnes–Hut approximates far-field forces ' +
-    'via a quadtree, O(N log N). See the θ slider for the accuracy trade.';
+    'via a quadtree, O(N log N); GPU runs the exact O(N²) sum in Float32 ' +
+    'compute shaders (watch ΔE/E₀ for what the precision drop costs).';
+
+  const gpuOption = methodSelect.options[2];
+  const gpuNote = document.createElement('div');
+  gpuNote.className = 'note';
+  gpuNote.hidden = true;
+  const disableGpu = (note: string): void => {
+    gpuOption.disabled = true;
+    gpuNote.textContent = note;
+    gpuNote.hidden = false;
+    if (methodSelect.value === 'gpu') {
+      methodSelect.value = 'barnes-hut';
+    }
+  };
+  if (!cfg.gpuAvailable) {
+    disableGpu('WebGPU unavailable in this browser — GPU force method disabled.');
+  }
 
   const thetaOut = document.createElement('output');
   const thetaSlider = slider(0, 1, 0.05, cfg.theta);
@@ -132,6 +154,7 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
     row('Bodies', countSlider, countOut),
     row('Timestep', dtSlider, dtOut),
     row('Forces', methodSelect),
+    gpuNote,
     row('θ', thetaSlider, thetaOut),
   );
 
@@ -157,5 +180,5 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
     cfg.forceMethod,
   );
 
-  return { syncScenario };
+  return { syncScenario, disableGpu };
 }
