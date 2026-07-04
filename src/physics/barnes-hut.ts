@@ -1,3 +1,4 @@
+import { G, type ForceCalculator } from './forces';
 import type { SimState } from './state';
 
 /**
@@ -35,6 +36,32 @@ import type { SimState } from './state';
  * cap. Mass and center of mass are then aggregated in a single bottom-up
  * pass: children are always created after their parent, so reverse arena
  * order visits every child before its parent.
+ *
+ * ## Traversal
+ *
+ * Force evaluation walks the tree once per particle with an explicit-stack
+ * iterative DFS: recursion would either allocate closures or risk the JS
+ * call-stack limit at the depth cap, and the explicit stack is a single
+ * pre-allocated Int32Array whose bound is known (at most 3 slots join per
+ * level, so 3·MAX_DEPTH + 1 entries). The opening criterion is evaluated
+ * in squared form, s² < θ²·d², avoiding a sqrt and a division — and making
+ * θ = 0 equivalence structural: the strict inequality can never hold, so
+ * every node opens and only leaf pairwise terms remain.
+ *
+ * Accepted monopoles use the same Plummer-softened kernel as the
+ * brute-force path (state.eps), including far-field terms — mixing kernels
+ * would fake energy drift.
+ *
+ * ## Physics caveat — approximation, not bug
+ *
+ * Node–particle interactions are NOT pairwise-symmetric: particle i may
+ * see a monopole containing j while j resolves i exactly. Newton's third
+ * law therefore holds only approximately and total momentum slowly drifts
+ * instead of being conserved to machine precision. That is inherent to
+ * Barnes–Hut — do not "fix" it. The machine-precision momentum test
+ * applies to the brute-force path only; the BH test asserts the drift is
+ * small and bounded. Energy drift likewise gains an O(θ)-controlled term
+ * that shrinks as θ → 0.
  */
 
 /**
@@ -77,8 +104,95 @@ export class BarnesHut {
   /** Particle chain links (length ≥ n), EMPTY-terminated. */
   private next = new Int32Array(0);
 
+  /**
+   * DFS stack for traversal. Popping one node pushes at most 4 children,
+   * so at most 3 net entries join per tree level.
+   */
+  private readonly stack = new Int32Array(3 * MAX_DEPTH + 1);
+
   constructor(theta = 0.5) {
     this.theta = theta;
+  }
+
+  /**
+   * The ForceCalculator implementation (arrow function so it can be handed
+   * around unbound): rebuild the tree, then accumulate accelerations.
+   */
+  readonly accelerations: ForceCalculator = (s) => {
+    this.build(s);
+    if (s.n > 0) this.traverse(s);
+  };
+
+  /**
+   * One tree walk per particle, writing state.ax/ay.
+   *
+   * Note the θ test compares against the distance to the node's CENTER OF
+   * MASS (not the region center): d = 0 then makes the strict inequality
+   * fail, so a node whose COM coincides with the target particle is always
+   * opened — no divide-by-zero path exists. For θ near 1 a node CONTAINING
+   * the target can pass the test and contribute i's own mass to the
+   * monopole; that is standard Barnes–Hut behaviour, part of the O(θ)
+   * approximation error, and vanishes for θ < ~0.7 (where d ≤ s√2 forces
+   * such nodes open).
+   */
+  private traverse(s: SimState): void {
+    const { n, px, py, ax, ay, mass } = s;
+    const eps2 = s.eps * s.eps;
+    const theta2 = this.theta * this.theta;
+    const { half, children, next, stack } = this;
+    const nodeMass = this.mass;
+    const comX = this.comX;
+    const comY = this.comY;
+
+    for (let i = 0; i < n; i++) {
+      const xi = px[i];
+      const yi = py[i];
+      let axi = 0;
+      let ayi = 0;
+
+      let top = 0;
+      stack[top++] = 0; // root
+      while (top > 0) {
+        const node = stack[--top];
+        const dx = comX[node] - xi;
+        const dy = comY[node] - yi;
+        const d2 = dx * dx + dy * dy;
+        const side = 2 * half[node];
+
+        if (side * side < theta2 * d2) {
+          // Far enough: the whole node acts as a point mass at its COM,
+          // through the same softened kernel as the brute-force path.
+          const r2 = d2 + eps2;
+          const invR3 = 1 / (r2 * Math.sqrt(r2));
+          axi += G * nodeMass[node] * dx * invR3;
+          ayi += G * nodeMass[node] * dy * invR3;
+          continue;
+        }
+
+        // Too close: open the node. Child nodes go on the stack; resident
+        // particles interact directly (exact pairwise term, skipping self).
+        for (let slot = node * 4; slot < node * 4 + 4; slot++) {
+          const v = children[slot];
+          if (v === EMPTY) continue;
+          if (v >= 0) {
+            stack[top++] = v;
+            continue;
+          }
+          for (let p = decodeParticle(v); p !== EMPTY; p = next[p]) {
+            if (p === i) continue;
+            const pdx = px[p] - xi;
+            const pdy = py[p] - yi;
+            const pr2 = pdx * pdx + pdy * pdy + eps2;
+            const invR3 = 1 / (pr2 * Math.sqrt(pr2));
+            axi += G * mass[p] * pdx * invR3;
+            ayi += G * mass[p] * pdy * invR3;
+          }
+        }
+      }
+
+      ax[i] = axi;
+      ay[i] = ayi;
+    }
   }
 
   /**
