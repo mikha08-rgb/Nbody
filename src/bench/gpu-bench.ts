@@ -59,7 +59,9 @@ function timeCpuBh(n: number): number | null {
   const probe = performance.now() - probe0;
   if (probe > CUTOFF_MS) return null;
 
-  const steps = Math.max(1, Math.round(REP_TARGET_MS / probe));
+  // Capped like the GPU path: a probe at (or rounded to) 0 ms under a
+  // coarse timer must not turn the rep loop infinite.
+  const steps = Math.min(400, Math.max(1, Math.round(REP_TARGET_MS / probe)));
   const warmup = Math.max(3, Math.round(steps / 10));
   for (let i = 0; i < warmup; i++) integrator.step(state, diskGalaxy.dt);
   let best = Infinity;
@@ -73,7 +75,8 @@ function timeCpuBh(n: number): number | null {
 
 async function timeGpu(ctx: GpuContext, gpu: GpuLeapfrog, n: number): Promise<number | null> {
   const state = diskGalaxy.generate(n, SEED);
-  gpu.init(state);
+  gpu.init(state); // quantizes the mirror in place — the pre-step reference
+  const before = state.px.slice(0, Math.min(state.n, 256));
 
   // Warm up pipelines/driver before probing, then measure one synced step.
   for (let i = 0; i < 3; i++) gpu.step(state, diskGalaxy.dt);
@@ -92,6 +95,20 @@ async function timeGpu(ctx: GpuContext, gpu: GpuLeapfrog, n: number): Promise<nu
     await ctx.device.queue.onSubmittedWorkDone();
     best = Math.min(best, (performance.now() - t0) / steps);
   }
+
+  // Honesty guard: a validation failure would no-op every dispatch and
+  // "measure" absurdly fast steps. Require that the system actually moved
+  // before reporting a number (disk bodies move ~1e-3/step — far above
+  // f32 resolution, so a bitwise-identical readback means nothing ran).
+  await gpu.readState(state);
+  let moved = false;
+  for (let i = 0; i < before.length && !moved; i++) {
+    moved = state.px[i] !== before[i] && Number.isFinite(state.px[i]);
+  }
+  if (!moved) {
+    log(`!! n=${n.toLocaleString('en-US')}: GPU state did not change after timed steps — result discarded`);
+    return null;
+  }
   return best;
 }
 
@@ -103,6 +120,11 @@ async function run(): Promise<void> {
     return;
   }
   ctx.lost.then((info) => log(`!! GPU device lost mid-benchmark (${info.reason}): ${info.message}`));
+  // Validation errors don't throw — they surface here. A benchmark that
+  // logged one must not be trusted (see the moved-state guard in timeGpu).
+  ctx.device.onuncapturederror = (event): void => {
+    log(`!! WebGPU uncaptured error: ${event.error.message}`);
+  };
 
   log(`GPU adapter: ${ctx.adapterLabel}`);
   log(`User agent: ${navigator.userAgent}`);
@@ -171,11 +193,17 @@ async function run(): Promise<void> {
 }
 
 const button = document.getElementById('run') as HTMLButtonElement;
-button.addEventListener('click', () => {
+const start = (): void => {
   button.disabled = true;
-  void run();
-});
+  // benchDone must be set on EVERY exit path: the headless driver waits
+  // on it, and a swallowed rejection would otherwise burn its whole
+  // timeout instead of reporting the real error.
+  run().catch((error: unknown) => {
+    log(`!! benchmark failed: ${String(error)}`);
+    document.body.dataset.benchDone = '1';
+  });
+};
+button.addEventListener('click', start);
 if (new URLSearchParams(location.search).has('auto')) {
-  button.disabled = true;
-  void run();
+  start();
 }

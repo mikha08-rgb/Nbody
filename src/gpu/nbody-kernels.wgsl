@@ -27,8 +27,12 @@ struct Params {
   half_dt: f32,
 }
 
-// Must match WORKGROUP_SIZE in nbody-gpu.ts.
-const WORKGROUP_SIZE: u32 = 256u;
+// Single-sourced from WORKGROUP_SIZE in nbody-gpu.ts, injected at
+// pipeline creation via GPUProgrammableStage.constants — a silent
+// mismatch would freeze half the bodies with no error (dispatch count is
+// computed on the TS side). The value below is only a default that keeps
+// this file valid standalone; tune the size in nbody-gpu.ts.
+override WORKGROUP_SIZE: u32 = 256u;
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> pos_x: array<f32>;

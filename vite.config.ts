@@ -4,9 +4,12 @@ export default defineConfig({
   build: {
     rollupOptions: {
       // Two pages: the simulator and the GPU benchmark (/bench.html).
+      // Plain root-relative paths — URL.pathname percent-encodes (a
+      // checkout under "My Projects" broke the build) and keeps the
+      // /C:/ prefix on Windows; Vite resolves these against the root.
       input: {
-        main: new URL('./index.html', import.meta.url).pathname,
-        bench: new URL('./bench.html', import.meta.url).pathname,
+        main: 'index.html',
+        bench: 'bench.html',
       },
     },
   },

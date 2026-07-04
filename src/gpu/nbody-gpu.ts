@@ -26,7 +26,12 @@ import kernels from './nbody-kernels.wgsl?raw';
  * of the precision story, not hidden.
  */
 
-/** Threads per workgroup — must match WORKGROUP_SIZE in nbody-kernels.wgsl. */
+/**
+ * Threads per workgroup. THE single source: injected into the WGSL as a
+ * pipeline-creation override constant, so the shader's indexing/tiling
+ * and the dispatch count below can never disagree (a silent mismatch
+ * would leave part of the system frozen with no error raised).
+ */
 export const WORKGROUP_SIZE = 256;
 
 /**
@@ -77,7 +82,7 @@ export class NBodyPrograms {
       device.createComputePipeline({
         label: `nbody-${entryPoint}`,
         layout,
-        compute: { module, entryPoint },
+        compute: { module, entryPoint, constants: { WORKGROUP_SIZE } },
       });
     this.kickDrift = pipeline('kick_drift');
     this.force = pipeline('force');

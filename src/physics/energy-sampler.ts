@@ -1,3 +1,4 @@
+import { kineticEnergy } from './diagnostics';
 import { G } from './forces';
 import type { SimState } from './state';
 
@@ -52,7 +53,7 @@ export class EnergySampler {
    * positions and masses need to live in the snapshot.
    */
   begin(state: SimState): void {
-    const { n, px, py, vx, vy, mass } = state;
+    const { n, px, py, mass } = state;
     if (this.px.length < n) {
       this.px = new Float64Array(n);
       this.py = new Float64Array(n);
@@ -64,12 +65,9 @@ export class EnergySampler {
     this.n = n;
     this.eps2 = state.eps * state.eps;
 
-    // Same accumulation order as diagnostics.kineticEnergy.
-    let ke = 0;
-    for (let i = 0; i < n; i++) {
-      ke += 0.5 * mass[i] * (vx[i] * vx[i] + vy[i] * vy[i]);
-    }
-    this.kinetic = ke;
+    // The one true kinetic sum — calling it (rather than copying its
+    // loop) is what makes the bit-identical contract structural.
+    this.kinetic = kineticEnergy(state);
     this.potential = 0;
     this.row = 0;
     this.computeMs = 0;

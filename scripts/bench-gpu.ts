@@ -19,7 +19,14 @@ const browser = await chromium.launch({ headless: true, channel: 'chromium' });
 const page = await browser.newPage();
 page.on('console', (message) => {
   const text = message.text();
-  if (text.startsWith('[bench] ')) console.log(text.slice('[bench] '.length));
+  if (text.startsWith('[bench] ')) {
+    console.log(text.slice('[bench] '.length));
+  } else if (message.type() === 'error' || message.type() === 'warning') {
+    // WebGPU validation problems arrive as page console errors, not
+    // exceptions — swallowing them would let a broken kernel publish a
+    // clean-looking table of garbage numbers.
+    console.error(`[page ${message.type()}] ${text}`);
+  }
 });
 page.on('pageerror', (error) => console.error(`page error: ${error.message}`));
 
