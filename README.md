@@ -1,14 +1,18 @@
 # N-Body Gravity Simulator
 
 A 2D gravitational N-body simulator that runs in the browser — vanilla
-TypeScript + Canvas 2D, no framework. This is **Phase 1: a correct,
-readable CPU baseline**: brute-force O(N²) gravity, a symplectic leapfrog
+TypeScript + Canvas 2D, no framework. Phase 1 built **a correct, readable
+CPU baseline**: brute-force O(N²) gravity, a symplectic leapfrog
 integrator, and diagnostics that prove conservation laws hold, measured
-rather than assumed.
+rather than assumed. Phase 2 adds a **Barnes–Hut quadtree** — O(N log N)
+forces verified against that baseline — lifting the 60 fps ceiling from
+4,000 to 10,000 bodies and making a 10k–50k particle galaxy collision the
+payoff demo.
 
 Scenarios include a rotating disk galaxy (exponential profile, rotation
-curve from the enclosed mass), the Chenciner–Montgomery three-body
-figure-eight choreography, and a small planetary system.
+curve from the enclosed mass), a two-galaxy collision on a bound orbit
+(tidal tails, counter-rotating secondary), the Chenciner–Montgomery
+three-body figure-eight choreography, and a small planetary system.
 
 ## Run it
 
@@ -21,8 +25,9 @@ npm run build    # type-check + production build
 ```
 
 Controls: drag to pan, scroll to zoom; overlay has play/pause, reset,
-scenario selector, body count (regenerates the scenario), and a live
-timestep slider.
+scenario selector, body count (regenerates the scenario), a live timestep
+slider, a force-method selector (brute force / Barnes–Hut), and a live θ
+slider for the Barnes–Hut opening angle.
 
 ## Physics
 
@@ -34,6 +39,22 @@ timestep slider.
   exact solutions of the unsoftened problem). The potential-energy
   diagnostic uses the same softened kernel as the force, so KE + U is the
   genuinely conserved quantity.
+- **Barnes–Hut quadtree** (Phase 2): far-away groups of bodies act as
+  single point masses (monopole at the center of mass), chosen by the
+  standard opening test s/d < θ. **What θ trades off:** larger θ accepts
+  coarser far-field approximations — faster steps, larger force error
+  (RMS ~0.4% at the default θ = 0.5 on the benchmark disk); θ = 0 opens
+  every node and degenerates to exact brute force, a tested guarantee.
+  The tree is rebuilt every step into a flat pre-allocated typed-array
+  arena — no node objects, near-zero garbage per step (measured, see the
+  benchmark). The brute-force kernel stays as the correctness reference
+  and the default for small N.
+- **An honest caveat, by design:** Barnes–Hut forces are not
+  pairwise-symmetric, so Newton's third law — and with it exact momentum
+  conservation — does not survive the approximation. Momentum drifts
+  slowly (~2.5×10⁻⁴ relative over the pinned 1,000-step test) instead of
+  holding at 10⁻¹²; that is inherent to the algorithm, and the energy
+  overlay doubles as a live accuracy readout for θ.
 - **Structure-of-arrays** state in flat `Float64Array`s — cache-friendly
   now, and the layout Phase 3's GPU buffers will mirror.
 - Fixed physics timestep decoupled from the render loop via an
@@ -42,8 +63,13 @@ timestep slider.
 
 The test suite pins concrete tolerances: orbital radius stable to 1% over
 100 orbits, leapfrog energy drift < 10⁻⁴ over 1,000 steps (with Euler as a
-failing control), momentum conserved to 10⁻¹² relative, and
-time-reversibility to 10⁻⁶ of the system size.
+failing control), momentum conserved to 10⁻¹² relative (brute-force path),
+and time-reversibility to 10⁻⁶ of the system size. Phase 2 adds: quadtree
+root mass/COM match direct summation, every particle in exactly one leaf,
+θ = 0 equal to brute force within 10⁻¹², RMS force error < 1% at θ = 0.5
+and monotonically improving as θ shrinks, bounded energy and momentum
+drift under leapfrog+BH, and termination on degenerate (coincident)
+inputs.
 
 ## Benchmark
 
@@ -79,11 +105,16 @@ galaxy, brute force vs Barnes–Hut at θ = 0.5 (the benchmark setting —
 
 ## Roadmap
 
-- **Phase 1 (this)** — brute-force CPU baseline: correctness, tests,
+- **Phase 1 (done)** — brute-force CPU baseline: correctness, tests,
   diagnostics, benchmark.
-- **Phase 2 — Barnes–Hut quadtree**: O(N log N) force approximation;
-  the benchmark above quantifies the speedup, the energy-drift diagnostic
-  quantifies the accuracy cost of the opening-angle parameter θ.
+- **Phase 2 (done)** — Barnes–Hut quadtree: O(N log N) forces verified
+  against the brute-force oracle; the benchmark above quantifies the
+  speedup (crossover ~1–2k bodies, 8.6× at 20k), the energy-drift
+  diagnostic quantifies the accuracy cost of θ. Deliberately not built:
+  incremental tree updates, higher-order multipoles, adaptive timesteps.
 - **Phase 3 — WebGPU compute**: port the force kernel to GPU compute
   shaders (Float32); the energy-drift diagnostic measures what the drop
-  from Float64 costs.
+  from Float64 costs. Profiling note from Phase 2: the per-particle tree
+  traversal is embarrassingly parallel and dominates the step, so workers
+  or SIMD would help long before the GPU port — both deliberately left
+  out of scope until Phase 3 decides the compute story wholesale.

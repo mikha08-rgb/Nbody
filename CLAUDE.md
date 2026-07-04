@@ -17,9 +17,17 @@ TypeScript strict mode, no `any`.
   the unsoftened problem); ε > 0 for the disk galaxy.
 - **The potential-energy diagnostic uses the same softened kernel as the
   force** (`src/physics/forces.ts`). Mixing kernels fakes energy drift.
-- **One O(N²) force evaluation per step.** Accelerations live in `SimState`
-  so leapfrog's closing kick is reused as the next opening kick. Keep this
-  invariant when adding integrators or force calculators.
+- **One force evaluation per step** (brute O(N²) or Barnes–Hut, behind the
+  `ForceCalculator` seam). Accelerations live in `SimState` so leapfrog's
+  closing kick is reused as the next opening kick. Keep this invariant
+  when adding integrators or force calculators.
+- **Momentum is machine-precision on the brute path ONLY.** Barnes–Hut
+  node–particle forces are not pairwise-symmetric, so Newton's third law
+  holds only approximately and total momentum drifts slowly — expected and
+  correct for the algorithm, do not "fix" it. The 1e-12 momentum test pins
+  the brute path; the BH test asserts drift is merely small and bounded.
+- **Brute force stays.** It is the correctness reference, the test oracle,
+  and the default for small N — never delete or modify it to serve BH.
 - **Fixed physics dt, decoupled from rAF** via the accumulator in
   `src/physics/simulation.ts`; substep cap drops excess time (no spiral).
 - **Every scenario ends generation in the center-of-momentum frame**
@@ -32,10 +40,40 @@ TypeScript strict mode, no `any`.
 
 - `Integrator` (`src/physics/integrator.ts`) — leapfrog is the real one;
   Euler exists only as the tests' negative control.
-- Force kernel (`src/physics/forces.ts`) — Phase 2's Barnes–Hut replaces
-  `computeAccelerations` behind the same shape.
+- `ForceCalculator` (`src/physics/forces.ts`) — a `(state) => void` that
+  writes `ax/ay`. Implementations: brute `computeAccelerations` and
+  `BarnesHut.accelerations`; integrators take one at construction.
 - Scenario registry (`src/scenarios/registry.ts`) — one file + one entry
-  per new scenario.
+  per new scenario. `addDisk` (`src/scenarios/disk-galaxy.ts`) is the
+  reusable disk builder for multi-galaxy scenarios.
+
+## Barnes–Hut quadtree (`src/physics/barnes-hut.ts`)
+
+- **Flat node arena**: SoA typed arrays indexed by node id, rebuilt from
+  scratch every step, grown geometrically, reused forever — no node
+  objects, no closures in the hot path, ~zero garbage per step (the bench
+  verifies this with a heap-spread check).
+- **Child-slot encoding**: −1 empty · ≥ 0 node index · ≤ −2 particle chain
+  headed by particle −(v+2), linked through a per-particle `next` array.
+  There are no leaf node records.
+- **Opening criterion**: squared θ test, side² < θ²·d², against distance
+  to the node's center of mass. θ = 0 can never satisfy the strict
+  inequality, so it degenerates to exact brute force — a tested contract
+  (1e-12), not an accident. Monopole terms use the same softened kernel
+  (`state.eps`) as the brute path.
+- **Depth cap 32**: coincident/near-coincident particles chain into one
+  bucket at the cap instead of splitting forever.
+- Traversal is an iterative DFS over a pre-allocated stack (bound
+  3·MAX_DEPTH+1); one tree walk per particle.
+
+## Benchmark methodology
+
+`npm run bench`: brute vs BH at θ = 0.5 (the pinned benchmark setting —
+never tune θ up, skip particles, or cap traversal to improve numbers) on
+the seeded disk, N ∈ {1k…50k}. Brute is probed with one step and skipped
+— never extrapolated — past a 2 s cutoff. The max-N-at-60fps claim is the
+largest benchmarked N with a BH step under 16.7 ms. Scenario defaults
+that cite performance (galaxy-collision defaultN) derive from this bench.
 
 ## Test policy
 
@@ -55,5 +93,8 @@ by re-running, not by editing numbers.
 ## Phase roadmap
 
 1. **Done:** brute-force CPU baseline, leapfrog, tests, diagnostics, bench.
-2. Barnes–Hut quadtree (θ opening angle; bench = speed, drift = accuracy).
+2. **Done:** Barnes–Hut quadtree (θ opening angle; bench = speed, drift =
+   accuracy), galaxy-collision scenario. Deliberately out of scope, at
+   most future work: incremental tree updates, higher multipoles,
+   adaptive/individual timesteps, workers/SIMD/wasm.
 3. WebGPU compute port (Float32 buffers; drift quantifies precision loss).
