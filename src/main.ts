@@ -46,13 +46,6 @@ let scenario = getScenario('disk-galaxy');
 let count = scenario.defaultN;
 
 /**
- * WebGPU is detected once at boot; no adapter → gpuCtx is null, the GPU
- * option renders disabled with a note, and everything below runs exactly
- * as it did in Phases 1–2.
- */
-const gpuCtx = await acquireGpu();
-
-/**
  * Force-method dispatch, two seams deep. Between the CPU methods the
  * integrator holds one ForceCalculator whose closure switches on the
  * current UI selection — switching mid-run is safe: the next step's
@@ -61,19 +54,28 @@ const gpuCtx = await acquireGpu();
  * an integrator swap instead (the GPU path integrates on-device, see
  * gpu-leapfrog.ts), delegated through SwitchableIntegrator so Simulation
  * never knows.
+ *
+ * The GPU delegate attaches asynchronously (below): WebGPU detection has
+ * no spec-mandated deadline, so the CPU app must never wait on it — boot
+ * is Phases 1–2 verbatim, and 'gpu' cannot be the boot method.
  */
 const barnesHut = new BarnesHut();
 let forceMethod: ForceMethod = scenario.forceMethod ?? 'brute';
-if (forceMethod === 'gpu' && gpuCtx === null) forceMethod = 'barnes-hut';
+if (forceMethod === 'gpu') forceMethod = 'barnes-hut'; // GPU attaches async below
 const force: ForceCalculator = (s) =>
   forceMethod === 'barnes-hut' ? barnesHut.accelerations(s) : computeAccelerations(s);
 
-const integrator = new SwitchableIntegrator(
-  new Leapfrog(force),
-  gpuCtx !== null ? new GpuLeapfrog(gpuCtx.device) : null,
-  forceMethod === 'gpu',
-);
+const integrator = new SwitchableIntegrator(new Leapfrog(force), null, false);
 const sim = new Simulation(scenario.generate(count, SEED), integrator, scenario.dt);
+
+/**
+ * 'gpu' is honored only while a live GPU delegate is attached (adapter
+ * present, device not lost). Scenario defaults may name it — that is the
+ * documented seam — but every assignment site must degrade through here.
+ */
+function resolveForceMethod(method: ForceMethod): ForceMethod {
+  return method === 'gpu' && !integrator.gpuAvailable ? 'barnes-hut' : method;
+}
 
 /**
  * Energy diagnostics run through the time-sliced sampler: 'baseline'
@@ -126,13 +128,12 @@ const controls = buildControls(el('controls'), {
   dt: sim.dt,
   forceMethod,
   theta: barnesHut.theta,
-  gpuAvailable: gpuCtx !== null,
   onTogglePlay: () => (sim.running = !sim.running),
   onReset: () => resetScenario(sim.dt),
   onScenarioChange: (id) => {
     scenario = getScenario(id);
     count = scenario.defaultN;
-    forceMethod = scenario.forceMethod ?? 'brute';
+    forceMethod = resolveForceMethod(scenario.forceMethod ?? 'brute');
     resetScenario(scenario.dt);
     controls.syncScenario(scenario, count, sim.dt, forceMethod);
   },
@@ -160,14 +161,23 @@ const controls = buildControls(el('controls'), {
   },
 });
 
-// If the GPU device dies mid-session (driver reset, GPU removed), continue
-// on the CPU from the read-back mirror and retire the option for good.
-gpuCtx?.lost.then((info) => {
-  console.warn(`WebGPU device lost (${info.reason}): ${info.message}`);
-  if (forceMethod === 'gpu') forceMethod = 'barnes-hut';
-  integrator.fallbackToCpu(sim.state);
-  controls.disableGpu('WebGPU device lost — GPU force method disabled.');
-  controls.syncScenario(scenario, count, sim.dt, forceMethod);
+// WebGPU detection, off the boot path: the CPU app is already running by
+// the time this settles. On success the GPU option unlocks; if the device
+// later dies, continue on the CPU from the read-back mirror and retire
+// the option for good (disableGpu routes any needed method change through
+// the normal change event, so no state here needs manual patching).
+void acquireGpu().then((ctx) => {
+  if (ctx === null) {
+    controls.disableGpu('WebGPU unavailable in this browser — GPU force method disabled.');
+    return;
+  }
+  integrator.attachGpu(new GpuLeapfrog(ctx.device));
+  controls.enableGpu();
+  ctx.lost.then((info) => {
+    console.warn(`WebGPU device lost (${info.reason}): ${info.message}`);
+    integrator.fallbackToCpu(sim.state);
+    controls.disableGpu('WebGPU device lost — GPU force method disabled.');
+  });
 });
 
 let last = performance.now();

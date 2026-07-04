@@ -10,8 +10,6 @@ export interface ControlsConfig {
   dt: number;
   forceMethod: ForceMethod;
   theta: number;
-  /** False → the GPU option renders disabled with a visible note. */
-  gpuAvailable: boolean;
   /** Toggle play/pause; returns the new running state. */
   onTogglePlay(): boolean;
   onReset(): void;
@@ -32,7 +30,17 @@ export interface Controls {
    * enablement).
    */
   syncScenario(scenario: Scenario, count: number, dt: number, forceMethod: ForceMethod): void;
-  /** Disable the GPU option after the fact (device lost mid-session). */
+  /**
+   * Enable the GPU option (WebGPU detection succeeded). The option starts
+   * disabled with a "checking" note until one of these two is called.
+   */
+  enableGpu(): void;
+  /**
+   * Disable the GPU option (no adapter / device lost). If GPU was the
+   * live selection, the change is routed through the normal change event
+   * so the app's method state and θ enablement stay in sync without any
+   * caller-side compensation.
+   */
   disableGpu(note: string): void;
 }
 
@@ -97,36 +105,41 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
   });
 
   const methodSelect = document.createElement('select');
-  for (const [value, label] of [
-    ['brute', 'Brute force (exact)'],
-    ['barnes-hut', 'Barnes–Hut (θ)'],
-    ['gpu', 'GPU brute force (f32)'],
-  ] as const) {
+  const methodOption = (value: ForceMethod, label: string): HTMLOptionElement => {
     const option = document.createElement('option');
     option.value = value;
     option.textContent = label;
     methodSelect.append(option);
-  }
+    return option;
+  };
+  methodOption('brute', 'Brute force (exact)');
+  methodOption('barnes-hut', 'Barnes–Hut (θ)');
+  const gpuOption = methodOption('gpu', 'GPU brute force (f32)');
   methodSelect.title =
     'Brute force is exact O(N²); Barnes–Hut approximates far-field forces ' +
     'via a quadtree, O(N log N); GPU runs the exact O(N²) sum in Float32 ' +
     'compute shaders (watch ΔE/E₀ for what the precision drop costs).';
 
-  const gpuOption = methodSelect.options[2];
   const gpuNote = document.createElement('div');
   gpuNote.className = 'note';
-  gpuNote.hidden = true;
+  const enableGpu = (): void => {
+    gpuOption.disabled = false;
+    gpuNote.hidden = true;
+  };
   const disableGpu = (note: string): void => {
     gpuOption.disabled = true;
     gpuNote.textContent = note;
     gpuNote.hidden = false;
     if (methodSelect.value === 'gpu') {
       methodSelect.value = 'barnes-hut';
+      // Route through the normal change path: onForceMethodChange and
+      // syncTheta must observe this like any user-driven switch.
+      methodSelect.dispatchEvent(new Event('change'));
     }
   };
-  if (!cfg.gpuAvailable) {
-    disableGpu('WebGPU unavailable in this browser — GPU force method disabled.');
-  }
+  // Detection is async (see main.ts); until it lands the option is
+  // disabled with an honest placeholder.
+  disableGpu('Checking WebGPU support…');
 
   const thetaOut = document.createElement('output');
   const thetaSlider = slider(0, 1, 0.05, cfg.theta);
@@ -180,5 +193,5 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
     cfg.forceMethod,
   );
 
-  return { syncScenario, disableGpu };
+  return { syncScenario, enableGpu, disableGpu };
 }

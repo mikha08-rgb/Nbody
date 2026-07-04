@@ -168,10 +168,11 @@ README precision story in the same commit.
 `npm run dev` (sim at `/`, GPU bench at `/bench.html`) · `npm test`
 (CPU, Node) · `npm run test:gpu` (browser mode, needs WebGPU) ·
 `npm run bench` (headless CPU, tsx) · `npm run bench:gpu` (headless
-browser GPU) · `npm run build` (tsc + vite). Benchmark results and the
-max-N-at-60fps claims in README.md derive from `npm run bench` /
-`npm run bench:gpu` output — update them by re-running, not by editing
-numbers.
+browser GPU) · `npm run build` (tsc + vite). `test:gpu` and `bench:gpu`
+need a one-time `npx playwright install chromium` (Playwright ships no
+postinstall). Benchmark results and the max-N-at-60fps claims in
+README.md derive from `npm run bench` / `npm run bench:gpu` output —
+update them by re-running, not by editing numbers.
 
 ## Phase roadmap
 

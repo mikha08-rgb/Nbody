@@ -23,6 +23,7 @@ three-body figure-eight choreography, and a small planetary system.
 
 ```sh
 npm install
+npx playwright install chromium   # one-time: browser for test:gpu / bench:gpu
 npm run dev       # dev server (simulator at /, GPU benchmark at /bench.html)
 npm test          # CPU physics test suite (Vitest, Node)
 npm run test:gpu  # GPU test suite (Vitest browser mode, real Chromium+WebGPU)
@@ -30,6 +31,9 @@ npm run bench     # headless CPU benchmark (no rendering)
 npm run bench:gpu # browser GPU benchmark, run headlessly via Playwright
 npm run build     # type-check + production build
 ```
+
+(Playwright has no postinstall hook, so the Chromium download really is a
+separate one-time step; only `test:gpu` and `bench:gpu` need it.)
 
 Controls: drag to pan, scroll to zoom; overlay has play/pause, reset,
 scenario selector, body count (regenerates the scenario), a live timestep
