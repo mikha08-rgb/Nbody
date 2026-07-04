@@ -48,21 +48,34 @@ time-reversibility to 10⁻⁶ of the system size.
 ## Benchmark
 
 `npm run bench` times the physics step (no rendering) on the seeded disk
-galaxy. On an Apple Silicon laptop (Node 25, single thread):
+galaxy, brute force vs Barnes–Hut at θ = 0.5 (the benchmark setting —
+θ is never tuned up to flatter the numbers). On an Apple Silicon laptop
+(Node 25, single thread):
 
-| Bodies | ms / step | Steps / frame budget (16.7 ms) |
-|-------:|----------:|-------------------------------:|
-| 500 | 0.209 | 79.7 |
-| 1,000 | 0.841 | 19.8 |
-| 2,000 | 3.427 | 4.9 |
-| 4,000 | 13.267 | 1.3 |
+| Bodies | Brute ms/step | BH (θ=0.5) ms/step | Speedup |
+|-------:|--------------:|--------------------:|--------:|
+| 1,000 | 0.83 | 0.81 | 1.0× |
+| 2,000 | 3.09 | 2.10 | 1.5× |
+| 5,000 | 20.20 | 7.01 | 2.9× |
+| 10,000 | 81.47 | 16.41 | 5.0× |
+| 20,000 | 326.33 | 38.11 | 8.6× |
+| 50,000 | — (> 2 s, skipped) | 107.64 | — |
 
-Derived from the table: **4,000 bodies is the largest benchmarked count
-whose step time (13.27 ms) fits inside the 16.7 ms / 60 fps frame
-budget** — with little room left for rendering at that size; 2,000 bodies
-(3.43 ms/step) runs with ample headroom. Step time scales as N², as
-expected for the brute-force kernel. This table is the before/after
-baseline for Phase 2.
+- **Crossover:** Barnes–Hut matches brute force at 1,000 bodies (within
+  noise) and wins decisively from 2,000 up — tree overhead stops paying
+  for itself only below ~1k, which is why brute force stays the default
+  for small scenarios.
+- **Max bodies at 60 fps: 10,000 with Barnes–Hut** (16.41 ms/step — at
+  the edge of the 16.7 ms budget, so with rendering on top expect
+  slightly under 60). The Phase 1 brute-force ceiling was 4,000.
+- Brute force at 50,000 is skipped, not extrapolated: a single probe
+  step exceeded the 2 s cutoff. The measured trend (×4 per doubling) is
+  textbook O(N²); Barnes–Hut grows at roughly O(N log N), ~2.2–2.8× per
+  doubling in this range.
+- **Allocation discipline:** the bench samples heap usage across 300
+  Barnes–Hut steps at N = 20,000 — spread 0.02 MB, i.e. the per-step
+  tree rebuild allocates essentially nothing (flat pre-allocated node
+  arena, no node objects).
 
 ## Roadmap
 

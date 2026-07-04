@@ -103,7 +103,10 @@ export const galaxyCollision: Scenario = {
   id: 'galaxy-collision',
   label: 'Galaxy collision',
   dt: 0.004,
-  defaultN: 20000,
+  // Benchmark-derived (npm run bench): 10k is the largest measured N whose
+  // Barnes-Hut step fits the 60 fps frame budget. The slider goes to 50k —
+  // the substep cap just slows sim time rather than dropping frames.
+  defaultN: 10000,
   maxN: 50000,
   supportsN: true,
   forceMethod: 'barnes-hut',
