@@ -9,7 +9,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "bench": "tsx scripts/bench.ts"
+    "bench": "tsx scripts/bench.ts",
+    "test:gpu": "vitest run --config vitest.gpu.config.ts"
   },
   "devDependencies": {
     "@vitest/browser-playwright": "^4.1.9",
