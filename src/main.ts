@@ -110,10 +110,11 @@ window.addEventListener('resize', applyViewport);
 const stats = new StatsOverlay(el('stats'));
 
 function resetScenario(dt: number): void {
+  // Land the reset directly on the desired integrator (sim.reset runs
+  // integrator.init): a fresh Float64 state must never round-trip through
+  // a stale GPU delegate, which would quantize it to Float32 for nothing.
+  integrator.setDesiredMode(forceMethod === 'gpu');
   sim.reset(scenario.generate(count, SEED), dt);
-  // A reset supersedes any in-flight CPU↔GPU handoff; reconcile the
-  // integrator with the current UI selection.
-  integrator.setUseGpu(forceMethod === 'gpu', sim.state);
   beginBaseline();
   camera.fit(sim.state);
 }
@@ -145,8 +146,14 @@ const controls = buildControls(el('controls'), {
     sim.dt = dt;
   },
   onForceMethodChange: (method) => {
+    const enteringGpu = method === 'gpu' && forceMethod !== 'gpu';
     forceMethod = method;
     integrator.setUseGpu(method === 'gpu', sim.state);
+    // Entering GPU mode quantizes the live system to Float32 (the
+    // documented one-off cost) — re-baseline so ΔE/E₀ measures
+    // integration drift from the quantized state, not the upload
+    // rounding (CLAUDE.md: don't double-count it as drift).
+    if (enteringGpu) beginBaseline();
   },
   onThetaChange: (theta) => {
     barnesHut.theta = theta;

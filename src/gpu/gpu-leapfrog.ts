@@ -80,6 +80,17 @@ export class GpuLeapfrog implements Integrator {
     await this.requireSystem(state).readState(state, includeAccelerations);
   }
 
+  /**
+   * Destroy the GPU-side system: buffers freed, in-flight snapshot
+   * landings neutralized. Called when the CPU takes ownership (handoff
+   * completion, device loss); the next init() builds a fresh system.
+   */
+  dispose(): void {
+    this.system?.destroy();
+    this.system = null;
+    this.stepsSinceSnapshot = 0;
+  }
+
   private requireSystem(state: SimState): NBodyGpu {
     if (this.system === null || this.system.n !== state.n) {
       throw new Error('GpuLeapfrog used without init() for this state');
