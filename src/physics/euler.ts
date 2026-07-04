@@ -1,4 +1,4 @@
-import { computeAccelerations } from './forces';
+import { computeAccelerations, type ForceCalculator } from './forces';
 import type { Integrator } from './integrator';
 import type { SimState } from './state';
 
@@ -20,8 +20,11 @@ import type { SimState } from './state';
 export class Euler implements Integrator {
   readonly name = 'euler';
 
+  /** Defaults to the brute-force kernel, same as Leapfrog. */
+  constructor(private readonly computeForces: ForceCalculator = computeAccelerations) {}
+
   init(state: SimState): void {
-    computeAccelerations(state);
+    this.computeForces(state);
   }
 
   step(state: SimState, dt: number): void {
@@ -34,7 +37,7 @@ export class Euler implements Integrator {
       vx[i] += dt * ax[i];
       vy[i] += dt * ay[i];
     }
-    computeAccelerations(state);
+    this.computeForces(state);
     state.time += dt;
   }
 }

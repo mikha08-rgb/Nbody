@@ -1,4 +1,4 @@
-import { computeAccelerations } from './forces';
+import { computeAccelerations, type ForceCalculator } from './forces';
 import type { Integrator } from './integrator';
 import type { SimState } from './state';
 
@@ -27,8 +27,11 @@ import type { SimState } from './state';
 export class Leapfrog implements Integrator {
   readonly name = 'leapfrog';
 
+  /** Defaults to the brute-force kernel; Phase 2 injects Barnes–Hut here. */
+  constructor(private readonly computeForces: ForceCalculator = computeAccelerations) {}
+
   init(state: SimState): void {
-    computeAccelerations(state);
+    this.computeForces(state);
   }
 
   step(state: SimState, dt: number): void {
@@ -43,7 +46,7 @@ export class Leapfrog implements Integrator {
       py[i] += dt * vy[i];
     }
     // The single force evaluation of this step.
-    computeAccelerations(state);
+    this.computeForces(state);
     // Closing kick; these accelerations are reused by the next step.
     for (let i = 0; i < n; i++) {
       vx[i] += h * ax[i];

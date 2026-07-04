@@ -1,6 +1,15 @@
 import type { SimState } from './state';
 
 /**
+ * Force-calculator seam: reads state.px/py/mass, writes state.ax/ay.
+ *
+ * Phase 1's brute-force kernel (computeAccelerations below) and Phase 2's
+ * Barnes–Hut quadtree (barnes-hut.ts) are the two implementations.
+ * Integrators take one of these at construction and never care which.
+ */
+export type ForceCalculator = (s: SimState) => void;
+
+/**
  * Gravitational constant, in natural units.
  *
  * Working with G = 1 means a scenario chooses two of its three scales
