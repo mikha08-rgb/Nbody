@@ -1,5 +1,9 @@
+import { acquireGpu } from './gpu/device';
+import { GpuLeapfrog } from './gpu/gpu-leapfrog';
+import { SwitchableIntegrator } from './gpu/switchable-integrator';
 import { BarnesHut } from './physics/barnes-hut';
-import { relativeEnergyDrift, totalEnergy } from './physics/diagnostics';
+import { relativeEnergyDrift } from './physics/diagnostics';
+import { EnergySampler } from './physics/energy-sampler';
 import { computeAccelerations, type ForceCalculator } from './physics/forces';
 import { Leapfrog } from './physics/leapfrog';
 import { Simulation } from './physics/simulation';
@@ -17,16 +21,20 @@ import { StatsOverlay } from './ui/stats';
 const SEED = 42;
 
 /**
- * Minimum wall-clock interval between diagnostics samples. The energy
- * sample is O(N²) no matter which force method runs (the potential must
- * use the exact softened kernel — see forces.ts), so at Barnes-Hut body
- * counts a fixed interval would freeze the app. The actual interval
- * adapts to the measured sample cost (see the frame loop).
+ * Overlay refresh cadence, and the minimum gap between energy samples.
+ * The energy sample is O(N²) no matter which force method runs (the
+ * potential must use the exact softened kernel — see forces.ts), so it is
+ * computed by the time-sliced EnergySampler a few ms per frame instead of
+ * in one freezing pass; the gap between samples adapts to the measured
+ * sample cost (see the frame loop).
  */
 const STATS_INTERVAL_S = 0.5;
 
-/** Keep the energy sample below ~5% of wall-clock time. */
+/** Keep the amortized energy-sampling cost below ~5% of wall-clock time. */
 const STATS_COST_FACTOR = 20;
+
+/** Per-frame slice of energy-sampling work (~1/5 of a 60 fps frame). */
+const SAMPLE_BUDGET_MS = 3;
 
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -38,20 +46,56 @@ let scenario = getScenario('disk-galaxy');
 let count = scenario.defaultN;
 
 /**
- * Force-method dispatch. The integrator holds one ForceCalculator for its
- * lifetime, so the closure switches on the current UI selection instead of
- * rebuilding the integrator. Switching mid-run is safe: the next step's
- * opening kick reuses accelerations from the previous method — a one-off
- * O(θ)-sized nudge, same order as the approximation itself.
+ * Force-method dispatch, two seams deep. Between the CPU methods the
+ * integrator holds one ForceCalculator whose closure switches on the
+ * current UI selection — switching mid-run is safe: the next step's
+ * opening kick reuses accelerations from the previous method, a one-off
+ * O(θ)-sized nudge, same order as the approximation itself. CPU ↔ GPU is
+ * an integrator swap instead (the GPU path integrates on-device, see
+ * gpu-leapfrog.ts), delegated through SwitchableIntegrator so Simulation
+ * never knows.
+ *
+ * The GPU delegate attaches asynchronously (below): WebGPU detection has
+ * no spec-mandated deadline, so the CPU app must never wait on it — boot
+ * is Phases 1–2 verbatim, and 'gpu' cannot be the boot method.
  */
 const barnesHut = new BarnesHut();
 let forceMethod: ForceMethod = scenario.forceMethod ?? 'brute';
+if (forceMethod === 'gpu') forceMethod = 'barnes-hut'; // GPU attaches async below
 const force: ForceCalculator = (s) =>
   forceMethod === 'barnes-hut' ? barnesHut.accelerations(s) : computeAccelerations(s);
 
-const sim = new Simulation(scenario.generate(count, SEED), new Leapfrog(force), scenario.dt);
-let e0 = totalEnergy(sim.state);
+const integrator = new SwitchableIntegrator(new Leapfrog(force), null, false);
+const sim = new Simulation(scenario.generate(count, SEED), integrator, scenario.dt);
+
+/**
+ * 'gpu' is honored only while a live GPU delegate is attached (adapter
+ * present, device not lost). Scenario defaults may name it — that is the
+ * documented seam — but every assignment site must degrade through here.
+ */
+function resolveForceMethod(method: ForceMethod): ForceMethod {
+  return method === 'gpu' && !integrator.gpuAvailable ? 'barnes-hut' : method;
+}
+
+/**
+ * Energy diagnostics run through the time-sliced sampler: 'baseline'
+ * establishes E₀ after every (re)generation, then 'drift' samples repeat on
+ * an adaptive gap. drift stays null until the first full E₀+E pair exists.
+ */
+const sampler = new EnergySampler();
+let e0: number | null = null;
 let drift: number | null = null;
+let sampleKind: 'baseline' | 'drift' | null = null;
+let sampleGap = STATS_INTERVAL_S;
+let sinceSample = 0;
+
+function beginBaseline(): void {
+  e0 = null;
+  drift = null;
+  sampler.begin(sim.state);
+  sampleKind = 'baseline';
+}
+beginBaseline();
 
 const canvas = el<HTMLCanvasElement>('sim-canvas');
 const renderer = new Renderer(canvas);
@@ -68,9 +112,12 @@ window.addEventListener('resize', applyViewport);
 const stats = new StatsOverlay(el('stats'));
 
 function resetScenario(dt: number): void {
+  // Land the reset directly on the desired integrator (sim.reset runs
+  // integrator.init): a fresh Float64 state must never round-trip through
+  // a stale GPU delegate, which would quantize it to Float32 for nothing.
+  integrator.setDesiredMode(forceMethod === 'gpu');
   sim.reset(scenario.generate(count, SEED), dt);
-  e0 = totalEnergy(sim.state);
-  drift = null;
+  beginBaseline();
   camera.fit(sim.state);
 }
 
@@ -86,7 +133,7 @@ const controls = buildControls(el('controls'), {
   onScenarioChange: (id) => {
     scenario = getScenario(id);
     count = scenario.defaultN;
-    forceMethod = scenario.forceMethod ?? 'brute';
+    forceMethod = resolveForceMethod(scenario.forceMethod ?? 'brute');
     resetScenario(scenario.dt);
     controls.syncScenario(scenario, count, sim.dt, forceMethod);
   },
@@ -100,40 +147,89 @@ const controls = buildControls(el('controls'), {
     sim.dt = dt;
   },
   onForceMethodChange: (method) => {
+    const enteringGpu = method === 'gpu' && forceMethod !== 'gpu';
     forceMethod = method;
+    integrator.setUseGpu(method === 'gpu', sim.state);
+    // Entering GPU mode quantizes the live system to Float32 (the
+    // documented one-off cost) — re-baseline so ΔE/E₀ measures
+    // integration drift from the quantized state, not the upload
+    // rounding (CLAUDE.md: don't double-count it as drift).
+    if (enteringGpu) beginBaseline();
   },
   onThetaChange: (theta) => {
     barnesHut.theta = theta;
   },
 });
 
+// WebGPU detection, off the boot path: the CPU app is already running by
+// the time this settles. On success the GPU option unlocks; if the device
+// later dies, continue on the CPU from the read-back mirror and retire
+// the option for good (disableGpu routes any needed method change through
+// the normal change event, so no state here needs manual patching).
+void acquireGpu().then((ctx) => {
+  if (ctx === null) {
+    controls.disableGpu('WebGPU unavailable in this browser — GPU force method disabled.');
+    return;
+  }
+  integrator.attachGpu(new GpuLeapfrog(ctx.device));
+  controls.enableGpu();
+  ctx.lost.then((info) => {
+    console.warn(`WebGPU device lost (${info.reason}): ${info.message}`);
+    integrator.fallbackToCpu(sim.state);
+    controls.disableGpu('WebGPU device lost — GPU force method disabled.');
+  });
+});
+
 let last = performance.now();
 let statsClock = 0;
 let framesSinceStats = 0;
-let statsInterval = STATS_INTERVAL_S;
 
 function frame(now: number): void {
   const elapsed = (now - last) / 1000;
   last = now;
 
-  sim.advance(elapsed);
+  // GPU backpressure: when the snapshot ring is saturated the GPU is
+  // behind — skip stepping this frame so sim time slows to what the GPU
+  // sustains (drop-excess, like the substep cap; never a queue spiral).
+  if (!integrator.backpressured) {
+    sim.advance(elapsed);
+  }
   renderer.draw(sim.state, camera);
+  // Refresh the GPU-mode mirror (renderer + diagnostics read it); no-op
+  // on the CPU path and while paused.
+  integrator.pump(sim.state);
+
+  // Energy sampling: pump the in-progress sample a slice per frame, or
+  // schedule the next one. The gap adapts to the measured sample cost so
+  // the amortized overhead stays ~1/STATS_COST_FACTOR of wall time no
+  // matter how large N² grows.
+  if (sampleKind !== null) {
+    const e = sampler.tick(SAMPLE_BUDGET_MS);
+    if (e !== null) {
+      if (sampleKind === 'baseline') {
+        e0 = e;
+      } else if (e0 !== null) {
+        drift = relativeEnergyDrift(e, e0);
+      }
+      sampleKind = null;
+      sinceSample = 0;
+      sampleGap = Math.max(STATS_INTERVAL_S, (STATS_COST_FACTOR * sampler.lastCostMs) / 1000);
+    }
+  } else {
+    sinceSample += elapsed;
+    if (sinceSample >= sampleGap) {
+      sampler.begin(sim.state);
+      sampleKind = e0 === null ? 'baseline' : 'drift';
+    }
+  }
 
   framesSinceStats++;
   statsClock += elapsed;
-  if (statsClock >= statsInterval) {
-    // Time the O(N²) energy sample and space the next one so sampling
-    // stays a rounding error in the frame budget (~1 hitch per interval
-    // at worst) instead of freezing large-N Barnes-Hut runs.
-    const t0 = performance.now();
-    drift = relativeEnergyDrift(totalEnergy(sim.state), e0);
-    statsInterval = Math.max(
-      STATS_INTERVAL_S,
-      (STATS_COST_FACTOR * (performance.now() - t0)) / 1000,
-    );
+  if (statsClock >= STATS_INTERVAL_S) {
     stats.update({
       fps: framesSinceStats / statsClock,
       drift,
+      sampling: sampleKind !== null,
       bodies: sim.state.n,
       paused: !sim.running,
     });
