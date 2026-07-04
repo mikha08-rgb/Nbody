@@ -1,6 +1,9 @@
+import { BarnesHut } from './physics/barnes-hut';
 import { relativeEnergyDrift, totalEnergy } from './physics/diagnostics';
+import { computeAccelerations, type ForceCalculator } from './physics/forces';
 import { Leapfrog } from './physics/leapfrog';
 import { Simulation } from './physics/simulation';
+import type { ForceMethod } from './scenarios/types';
 import { attachCameraControls, Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { getScenario, scenarios } from './scenarios/registry';
@@ -13,8 +16,17 @@ import { StatsOverlay } from './ui/stats';
  */
 const SEED = 42;
 
-/** Wall-clock interval between diagnostics samples (energy is O(N²)). */
+/**
+ * Minimum wall-clock interval between diagnostics samples. The energy
+ * sample is O(N²) no matter which force method runs (the potential must
+ * use the exact softened kernel — see forces.ts), so at Barnes-Hut body
+ * counts a fixed interval would freeze the app. The actual interval
+ * adapts to the measured sample cost (see the frame loop).
+ */
 const STATS_INTERVAL_S = 0.5;
+
+/** Keep the energy sample below ~5% of wall-clock time. */
+const STATS_COST_FACTOR = 20;
 
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -25,7 +37,19 @@ function el<T extends HTMLElement>(id: string): T {
 let scenario = getScenario('disk-galaxy');
 let count = scenario.defaultN;
 
-const sim = new Simulation(scenario.generate(count, SEED), new Leapfrog(), scenario.dt);
+/**
+ * Force-method dispatch. The integrator holds one ForceCalculator for its
+ * lifetime, so the closure switches on the current UI selection instead of
+ * rebuilding the integrator. Switching mid-run is safe: the next step's
+ * opening kick reuses accelerations from the previous method — a one-off
+ * O(θ)-sized nudge, same order as the approximation itself.
+ */
+const barnesHut = new BarnesHut();
+let forceMethod: ForceMethod = scenario.forceMethod ?? 'brute';
+const force: ForceCalculator = (s) =>
+  forceMethod === 'barnes-hut' ? barnesHut.accelerations(s) : computeAccelerations(s);
+
+const sim = new Simulation(scenario.generate(count, SEED), new Leapfrog(force), scenario.dt);
 let e0 = totalEnergy(sim.state);
 let drift: number | null = null;
 
@@ -55,13 +79,16 @@ const controls = buildControls(el('controls'), {
   activeId: scenario.id,
   count,
   dt: sim.dt,
+  forceMethod,
+  theta: barnesHut.theta,
   onTogglePlay: () => (sim.running = !sim.running),
   onReset: () => resetScenario(sim.dt),
   onScenarioChange: (id) => {
     scenario = getScenario(id);
     count = scenario.defaultN;
+    forceMethod = scenario.forceMethod ?? 'brute';
     resetScenario(scenario.dt);
-    controls.syncScenario(scenario, count, sim.dt);
+    controls.syncScenario(scenario, count, sim.dt, forceMethod);
   },
   onCountChange: (n) => {
     // A new body count can't apply to a live system — regenerate.
@@ -72,11 +99,18 @@ const controls = buildControls(el('controls'), {
     // Applies live; see the slider tooltip for the symplectic caveat.
     sim.dt = dt;
   },
+  onForceMethodChange: (method) => {
+    forceMethod = method;
+  },
+  onThetaChange: (theta) => {
+    barnesHut.theta = theta;
+  },
 });
 
 let last = performance.now();
 let statsClock = 0;
 let framesSinceStats = 0;
+let statsInterval = STATS_INTERVAL_S;
 
 function frame(now: number): void {
   const elapsed = (now - last) / 1000;
@@ -87,8 +121,16 @@ function frame(now: number): void {
 
   framesSinceStats++;
   statsClock += elapsed;
-  if (statsClock >= STATS_INTERVAL_S) {
+  if (statsClock >= statsInterval) {
+    // Time the O(N²) energy sample and space the next one so sampling
+    // stays a rounding error in the frame budget (~1 hitch per interval
+    // at worst) instead of freezing large-N Barnes-Hut runs.
+    const t0 = performance.now();
     drift = relativeEnergyDrift(totalEnergy(sim.state), e0);
+    statsInterval = Math.max(
+      STATS_INTERVAL_S,
+      (STATS_COST_FACTOR * (performance.now() - t0)) / 1000,
+    );
     stats.update({
       fps: framesSinceStats / statsClock,
       drift,

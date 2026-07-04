@@ -1,10 +1,15 @@
-import type { Scenario } from '../scenarios/types';
+import type { ForceMethod, Scenario } from '../scenarios/types';
+
+/** Slider bound for scenarios that don't declare their own maxN. */
+const DEFAULT_MAX_N = 4000;
 
 export interface ControlsConfig {
   scenarios: readonly Scenario[];
   activeId: string;
   count: number;
   dt: number;
+  forceMethod: ForceMethod;
+  theta: number;
   /** Toggle play/pause; returns the new running state. */
   onTogglePlay(): boolean;
   onReset(): void;
@@ -13,11 +18,18 @@ export interface ControlsConfig {
   onCountChange(n: number): void;
   /** Fires live while dragging — dt applies to the running sim. */
   onDtChange(dt: number): void;
+  /** Fires on select — applies to the running sim from the next step. */
+  onForceMethodChange(method: ForceMethod): void;
+  /** Fires live while dragging — θ applies from the next step. */
+  onThetaChange(theta: number): void;
 }
 
 export interface Controls {
-  /** Sync widgets after a scenario switch (count bounds, dt, enablement). */
-  syncScenario(scenario: Scenario, count: number, dt: number): void;
+  /**
+   * Sync widgets after a scenario switch (count bounds, dt, force method,
+   * enablement).
+   */
+  syncScenario(scenario: Scenario, count: number, dt: number, forceMethod: ForceMethod): void;
 }
 
 function row(label: string, ...children: HTMLElement[]): HTMLDivElement {
@@ -62,7 +74,7 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
   select.addEventListener('change', () => cfg.onScenarioChange(select.value));
 
   const countOut = document.createElement('output');
-  const countSlider = slider(100, 4000, 100, cfg.count);
+  const countSlider = slider(100, DEFAULT_MAX_N, 100, cfg.count);
   countSlider.title = 'Applies on release: changing the body count regenerates the scenario.';
   countSlider.addEventListener('input', () => {
     countOut.textContent = Number(countSlider.value).toLocaleString();
@@ -80,24 +92,69 @@ export function buildControls(root: HTMLElement, cfg: ControlsConfig): Controls 
     cfg.onDtChange(dt);
   });
 
+  const methodSelect = document.createElement('select');
+  for (const [value, label] of [
+    ['brute', 'Brute force (exact)'],
+    ['barnes-hut', 'Barnes–Hut (θ)'],
+  ] as const) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    methodSelect.append(option);
+  }
+  methodSelect.title =
+    'Brute force is exact O(N²); Barnes–Hut approximates far-field forces ' +
+    'via a quadtree, O(N log N). See the θ slider for the accuracy trade.';
+
+  const thetaOut = document.createElement('output');
+  const thetaSlider = slider(0, 1, 0.05, cfg.theta);
+  thetaSlider.title =
+    'Barnes–Hut opening angle. Larger θ accepts coarser far-field ' +
+    'approximations: faster, less accurate (watch ΔE/E₀ in the overlay). ' +
+    'θ = 0 degenerates to exact brute force.';
+  const syncTheta = (): void => {
+    thetaOut.textContent = Number(thetaSlider.value).toFixed(2);
+    thetaSlider.disabled = methodSelect.value !== 'barnes-hut';
+  };
+  thetaSlider.addEventListener('input', () => {
+    syncTheta();
+    cfg.onThetaChange(Number(thetaSlider.value));
+  });
+  methodSelect.value = cfg.forceMethod;
+  methodSelect.addEventListener('change', () => {
+    syncTheta();
+    cfg.onForceMethodChange(methodSelect.value as ForceMethod);
+  });
+
   root.append(
     row('', playBtn, resetBtn),
     row('Scenario', select),
     row('Bodies', countSlider, countOut),
     row('Timestep', dtSlider, dtOut),
+    row('Forces', methodSelect),
+    row('θ', thetaSlider, thetaOut),
   );
 
-  const syncScenario = (scenario: Scenario, count: number, dt: number): void => {
+  const syncScenario = (
+    scenario: Scenario,
+    count: number,
+    dt: number,
+    forceMethod: ForceMethod,
+  ): void => {
     countSlider.disabled = !scenario.supportsN;
+    countSlider.max = String(scenario.maxN ?? DEFAULT_MAX_N);
     if (scenario.supportsN) countSlider.value = String(count);
     countOut.textContent = count.toLocaleString();
     dtSlider.value = String(dt);
     dtOut.textContent = dt.toFixed(4);
+    methodSelect.value = forceMethod;
+    syncTheta();
   };
   syncScenario(
     cfg.scenarios.find((sc) => sc.id === cfg.activeId) ?? cfg.scenarios[0],
     cfg.count,
     cfg.dt,
+    cfg.forceMethod,
   );
 
   return { syncScenario };
