@@ -80,6 +80,12 @@ export function attachCameraControls(canvas: HTMLCanvasElement, camera: Camera):
     canvas.releasePointerCapture(e.pointerId);
     canvas.classList.remove('dragging');
   });
+  // Touch interruptions (system gestures) end a drag via pointercancel,
+  // not pointerup; capture is released implicitly.
+  canvas.addEventListener('pointercancel', () => {
+    dragging = false;
+    canvas.classList.remove('dragging');
+  });
   canvas.addEventListener(
     'wheel',
     (e) => {

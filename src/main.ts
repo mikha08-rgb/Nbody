@@ -175,6 +175,9 @@ void acquireGpu().then((ctx) => {
   controls.enableGpu();
   ctx.lost.then((info) => {
     console.warn(`WebGPU device lost (${info.reason}): ${info.message}`);
+    // Before the fallback primes forces via cpu.init: the force closure
+    // maps 'gpu' to brute force, an O(N²) freeze at large N.
+    if (forceMethod === 'gpu') forceMethod = 'barnes-hut';
     integrator.fallbackToCpu(sim.state);
     controls.disableGpu('WebGPU device lost — GPU force method disabled.');
   });
@@ -217,7 +220,9 @@ function frame(now: number): void {
     }
   } else {
     sinceSample += elapsed;
-    if (sinceSample >= sampleGap) {
+    // While paused the state is unchanged — a new sample would just burn
+    // O(N²) recomputing the same drift.
+    if (sinceSample >= sampleGap && sim.running) {
       sampler.begin(sim.state);
       sampleKind = e0 === null ? 'baseline' : 'drift';
     }

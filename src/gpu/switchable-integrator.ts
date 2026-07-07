@@ -85,6 +85,11 @@ export class SwitchableIntegrator implements Integrator {
     this.generation++; // a reset supersedes any in-flight handoff
     this.waiting = false;
     this.active = this.wantGpu && this.gpu !== null ? this.gpu : this.cpu;
+    // A reset landing on the CPU retires any GPU system left over from the
+    // previous scenario — its buffers would otherwise stay allocated until
+    // GPU mode is re-entered (setUseGpu's handoff already disposes; this is
+    // the reset-path equivalent).
+    if (this.active === this.cpu) this.gpu?.dispose();
     this.active.init(state);
   }
 

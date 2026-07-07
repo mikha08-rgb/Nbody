@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "2D N-body gravity simulator — Phase 1: brute-force CPU baseline",
+  "description": "2D N-body gravity simulator — brute-force baseline, Barnes–Hut quadtree, WebGPU compute",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
